@@ -1,0 +1,35 @@
+# Build outputs
+build/
+out/
+*.vst3
+*.dSYM
+
+# Generated recipe preview sheets (recipe-render output)
+previews/
+
+# JUCE / CMake noise
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+_deps/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+
+# OS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+.cache/
