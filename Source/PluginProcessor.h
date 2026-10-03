@@ -17,7 +17,7 @@ namespace flashroll
 //
 // Threading:
 //   * Audio thread (processBlock) — forwards every host / controller note-on
-//     into `inbox` (lock-free) and renders the monitor / cue tones. It never
+//     and note-off into `inbox` (lock-free; offs matter for held chords) and renders the monitor / cue tones. It never
 //     touches the Drill. (On-screen key clicks skip the audio thread and call
 //     submitKey directly, so they work with no audio device running.)
 //   * Message thread (this object's Timer) — drains the inbox into the Drill,
@@ -69,7 +69,7 @@ public:
     void startDrill();
     void stopDrill();
     void resetStats();
-    void submitKey (int midi);   // an on-screen key click
+    void submitKey (int midi);   // an on-screen key click (latched: never released, see Drill::release)
 
     // Last scored event, for the editor's flash animation.
     Drill::Outcome lastOutcome() const noexcept                       { return lastOutcome_; }

@@ -1,6 +1,9 @@
 #include "PluginEditor.h"
 
+#include "Cards.h"
 #include "NoteSpelling.h"
+
+#include <bitset>
 
 namespace flashroll
 {
@@ -95,6 +98,7 @@ FlashRollAudioProcessorEditor::FlashRollAudioProcessorEditor (FlashRollAudioProc
       keyboard (p.getKeyboardState())
 {
     setUpRow (clefRow,   "CLEF",        { "Treble", "Bass", "Grand staff" });
+    setUpRow (cardRow,   "NOTES",       { "Single notes", "Intervals", "Triads", "Seventh chords" });
     setUpRow (trebleRow, "TREBLE RANGE", { "On the staff", "+1 ledger line", "+2 ledger lines",
                                            "+3 ledger lines", "+4 ledger lines" });
     setUpRow (bassRow,   "BASS RANGE",  { "On the staff", "+1 ledger line", "+2 ledger lines",
@@ -189,6 +193,7 @@ void FlashRollAudioProcessorEditor::pullSettings()
     const auto& s = processor.getDrill().getSettings();
 
     clefRow.box.setSelectedItemIndex   (static_cast<int> (s.clefMode), juce::dontSendNotification);
+    cardRow.box.setSelectedItemIndex   (static_cast<int> (s.cardType), juce::dontSendNotification);
     trebleRow.box.setSelectedItemIndex (s.ledgers[0], juce::dontSendNotification);
     bassRow.box.setSelectedItemIndex   (s.ledgers[1], juce::dontSendNotification);
     accRow.box.setSelectedItemIndex    (static_cast<int> (s.accidentals), juce::dontSendNotification);
@@ -213,6 +218,7 @@ void FlashRollAudioProcessorEditor::pushSettings()
 
     DrillSettings s;
     s.clefMode    = static_cast<ClefMode> (std::max (0, clefRow.box.getSelectedItemIndex()));
+    s.cardType    = static_cast<CardType> (std::max (0, cardRow.box.getSelectedItemIndex()));
     s.ledgers     = { std::max (0, trebleRow.box.getSelectedItemIndex()),
                       std::max (0, bassRow.box.getSelectedItemIndex()) };
     s.accidentals = static_cast<Accidentals> (std::max (0, accRow.box.getSelectedItemIndex()));
@@ -235,6 +241,7 @@ void FlashRollAudioProcessorEditor::timerCallback()
     // State restored by the host after the editor opened → reflect it.
     const auto& s = processor.getDrill().getSettings();
     if (static_cast<int> (s.clefMode) != clefRow.box.getSelectedItemIndex()
+        || static_cast<int> (s.cardType) != cardRow.box.getSelectedItemIndex()
         || s.ledgers[0] != trebleRow.box.getSelectedItemIndex()
         || s.ledgers[1] != bassRow.box.getSelectedItemIndex()
         || static_cast<int> (s.accidentals) != accRow.box.getSelectedItemIndex()
@@ -279,7 +286,10 @@ StaffScene FlashRollAudioProcessorEditor::buildScene (double now) const
         scene.flash = static_cast<float> (juce::jlimit (0.0, 1.0, 1.0 - (now - processor.lastOutcomeAtMs()) / kFlashFadeMs));
 
     if (d.answerRevealed())
-        scene.answerLabel = utf8 (spelling::name (scene.card.spelling, octaveOffset));
+        scene.answerLabel = utf8 (cards::label (scene.card, octaveOffset));
+
+    for (int i = 0; i < scene.card.size; ++i)
+        scene.found[static_cast<std::size_t> (i)] = scene.card.isChord() && d.toneFound (i);
 
     if (d.phase() != Drill::Phase::Solved && d.lastWrongMidi() >= 0)
     {
@@ -287,11 +297,10 @@ StaffScene FlashRollAudioProcessorEditor::buildScene (double now) const
         // In any-octave mode, draw the wrong key in the target's octave so it
         // lands next to the note instead of a dozen ledger lines away.
         if (s.octaveRule == OctaveRule::AnyOctave)
-            while (std::abs (ghost - scene.card.midi) > 6)
-                ghost += ghost < scene.card.midi ? 12 : -12;
+            while (std::abs (ghost - scene.card.bottomMidi()) > 6)
+                ghost += ghost < scene.card.bottomMidi() ? 12 : -12;
         scene.ghostMidi  = ghost;
-        scene.ghostLabel = utf8 (spelling::name (spelling::fromMidi (ghost, scene.card.spelling.accidental < 0),
-                                                 octaveOffset));
+        scene.ghostLabel = utf8 (spelling::name (spelling::fromMidi (ghost, scene.card.leansFlat()), octaveOffset));
     }
     return scene;
 }
@@ -303,8 +312,8 @@ void FlashRollAudioProcessorEditor::updateKeyboard (double /*now*/)
     int lo = 127, hi = 0;
     for (const auto& c : d.candidates())
     {
-        lo = std::min (lo, c.midi);
-        hi = std::max (hi, c.midi);
+        lo = std::min (lo, c.midis[0]);
+        hi = std::max (hi, c.midis[static_cast<std::size_t> (c.size - 1)]);
     }
     if (lo <= hi)
         keyboard.showRange (lo, hi);
@@ -318,10 +327,21 @@ void FlashRollAudioProcessorEditor::updateKeyboard (double /*now*/)
     keyboard.clearTints();
     if (! d.hasCard())
         return;
-    if (d.phase() == Drill::Phase::Solved)
-        keyboard.setTint (d.card().midi, TrainerKeyboard::Tint::Correct);
-    else if (d.answerRevealed())
-        keyboard.setTint (d.card().midi, TrainerKeyboard::Tint::Target);
+    const auto& card = d.card();
+    for (int i = 0; i < card.size; ++i)
+    {
+        const int m = card.midis[static_cast<std::size_t> (i)];
+        if (d.phase() == Drill::Phase::Solved)
+            keyboard.setTint (m, TrainerKeyboard::Tint::Correct);
+        else if (d.answerRevealed())
+            keyboard.setTint (m, TrainerKeyboard::Tint::Target);
+    }
+    // Chord tones already held light up green while the rest are still owed
+    // (in any-octave mode that's whatever key was actually pressed).
+    if (card.isChord() && d.phase() == Drill::Phase::Prompt)
+        for (int m = 0; m < 128; ++m)
+            if (d.pressedOnCard (m))
+                keyboard.setTint (m, TrainerKeyboard::Tint::Correct);
     if (d.phase() != Drill::Phase::Solved && d.lastWrongMidi() >= 0)
         keyboard.setTint (d.lastWrongMidi(), TrainerKeyboard::Tint::Wrong);
 }
@@ -408,12 +428,22 @@ void FlashRollAudioProcessorEditor::paintStats (juce::Graphics& g, juce::Rectang
     g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
     g.drawText ("NEEDS WORK", r.removeFromTop (18), juce::Justification::centredLeft);
 
-    struct Weak { const Card* card; double acc; };
+    struct Weak { Clef clef; Spelling spelling; double acc; };
     std::vector<Weak> weak;
+    std::array<std::bitset<128>, kNumClefs> listed;   // one row per (clef, key)
     for (const auto& c : d.candidates())
-        if (const auto& st = d.stats (c.clef, c.midi); st.attempts >= 3 && st.accuracy() < 0.9)
-            if (c.spelling.accidental >= 0 || d.getSettings().accidentals != Accidentals::Mixed)   // one row per key in Mixed
-                weak.push_back ({ &c, st.accuracy() });
+        for (int i = 0; i < c.size; ++i)
+        {
+            const int m = c.midis[static_cast<std::size_t> (i)];
+            auto& seen = listed[static_cast<std::size_t> (c.clef)];
+            if (seen[static_cast<std::size_t> (m)])
+                continue;
+            if (const auto& st = d.stats (c.clef, m); st.attempts >= 3 && st.accuracy() < 0.9)
+            {
+                seen.set (static_cast<std::size_t> (m));
+                weak.push_back ({ c.clef, c.notes[static_cast<std::size_t> (i)], st.accuracy() });
+            }
+        }
     std::sort (weak.begin(), weak.end(), [] (const Weak& a, const Weak& b) { return a.acc < b.acc; });
 
     if (weak.empty())
@@ -425,8 +455,8 @@ void FlashRollAudioProcessorEditor::paintStats (juce::Graphics& g, juce::Rectang
     for (std::size_t i = 0; i < std::min<std::size_t> (3, weak.size()); ++i)
     {
         const auto& w = weak[i];
-        const auto name = utf8 (spelling::name (w.card->spelling, processor.getOctaveOffset()))
-                        + (w.card->clef == Clef::Treble ? "  treble" : "  bass");
+        const auto name = utf8 (spelling::name (w.spelling, processor.getOctaveOffset()))
+                        + (w.clef == Clef::Treble ? "  treble" : "  bass");
         row (name, juce::String (juce::roundToInt (w.acc * 100.0)) + "%");
     }
 }
@@ -441,7 +471,7 @@ void FlashRollAudioProcessorEditor::resized()
         auto brand = left.removeFromTop (26);
         juce::ignoreUnused (brand);   // aligns the first row under the title strip
     }
-    for (auto* row : { &clefRow, &trebleRow, &bassRow, &accRow, &octaveRow, &timeRow, &flashRow, &namesRow })
+    for (auto* row : { &clefRow, &cardRow, &trebleRow, &bassRow, &accRow, &octaveRow, &timeRow, &flashRow, &namesRow })
     {
         row->label.setBounds (left.removeFromTop (16));
         row->box.setBounds (left.removeFromTop (24));

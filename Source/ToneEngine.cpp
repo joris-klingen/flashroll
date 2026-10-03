@@ -15,7 +15,7 @@ void ToneEngine::reset() noexcept
 {
     for (auto& v : monitor) v.midi = -1;
     for (auto& v : cues)    v.midi = -1;
-    pendingCue.store (-1);
+    pendingCue.store (0);
 }
 
 double ToneEngine::freqOf (int midi) noexcept
@@ -29,9 +29,14 @@ float ToneEngine::perSample (float seconds) const noexcept
     return static_cast<float> (std::pow (0.001, 1.0 / (std::max (0.005f, seconds) * sampleRate)));
 }
 
-void ToneEngine::requestCue (Cue c, int midi) noexcept
+void ToneEngine::requestCue (Cue c, const int* midis, int count) noexcept
 {
-    pendingCue.store ((static_cast<int> (c) << 8) | (juce::jlimit (0, 127, midi)));
+    count = juce::jlimit (1, kMaxCueNotes, count);
+    std::uint64_t packed = (static_cast<std::uint64_t> (c) + 1) << 56
+                         | static_cast<std::uint64_t> (count) << 48;
+    for (int i = 0; i < count; ++i)
+        packed |= static_cast<std::uint64_t> (juce::jlimit (0, 127, midis[i])) << (8 * i);
+    pendingCue.store (packed);
 }
 
 void ToneEngine::startVoice (Voice& v, double freq, float level, float decaySec,
@@ -80,24 +85,49 @@ void ToneEngine::noteOff (int midi) noexcept
 
 void ToneEngine::pollCue() noexcept
 {
-    const int req = pendingCue.exchange (-1);
-    if (req < 0)
+    const auto req = pendingCue.exchange (0);
+    if (req == 0)
         return;
 
-    const auto cue  = static_cast<Cue> (req >> 8);
-    const int  midi = req & 0xff;
-    auto& v = cues[nextCue];
-    nextCue = (nextCue + 1) % cues.size();
+    const auto cue   = static_cast<Cue> ((req >> 56) - 1);
+    const int  count = static_cast<int> ((req >> 48) & 0xff);
+    const auto note  = [req] (int i) { return static_cast<int> ((req >> (8 * i)) & 0xff); };
+
+    const auto next = [this] () -> Voice& {
+        auto& v = cues[nextCue];
+        nextCue = (nextCue + 1) % cues.size();
+        return v;
+    };
+
+    // Cues are "released" from the start (held = false) so they ring out.
+    const auto ringOut = [] (Voice& v) { v.held = false; v.release = v.decay; };
 
     switch (cue)
     {
-        // Cues are "released" from the start (held = false) so they ring out.
-        case Cue::Correct: startVoice (v, freqOf (juce::jlimit (84, 108, midi + 24)), 0.20f, 0.18f, 0.18f, 0.15f, 128); break;
-        case Cue::Wrong:   startVoice (v, 98.0, 0.30f, 0.22f, 0.22f, 0.6f, 128); break;
-        case Cue::Reveal:  startVoice (v, freqOf (midi), 0.26f, 1.2f, 1.2f, 0.3f, 128); break;
+        case Cue::Correct:
+        {
+            auto& v = next();
+            startVoice (v, freqOf (juce::jlimit (84, 108, note (0) + 24)), 0.20f, 0.18f, 0.18f, 0.15f, 128);
+            ringOut (v);
+            break;
+        }
+        case Cue::Wrong:
+        {
+            auto& v = next();
+            startVoice (v, 98.0, 0.30f, 0.22f, 0.22f, 0.6f, 128);
+            ringOut (v);
+            break;
+        }
+        case Cue::Reveal:
+            // Quieter per note as the chord grows, so a seventh isn't louder than a single note.
+            for (int i = 0; i < count; ++i)
+            {
+                auto& v = next();
+                startVoice (v, freqOf (note (i)), 0.26f / std::sqrt (static_cast<float> (count)), 1.2f, 1.2f, 0.3f, 128);
+                ringOut (v);
+            }
+            break;
     }
-    v.held = false;
-    v.release = v.decay;
 }
 
 float ToneEngine::renderVoice (Voice& v) noexcept

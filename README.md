@@ -8,6 +8,8 @@ notes you miss come up more often.
 
 ![FlashRoll](docs/screenshot.png)
 
+![Chord drill: two tones found, one to go](docs/screenshot-chords.png)
+
 ## What it does
 
 - **Real engraving.** Clefs, whole notes, sharps/flats and ledger lines are
@@ -17,6 +19,14 @@ notes you miss come up more often.
 - **Answer from any MIDI source.** Play your controller or digital piano (the
   host's MIDI), or click the on-screen keyboard. Enharmonics count as correct
   automatically: you answer with a *key*, so C♯ and D♭ are the same answer.
+- **Intervals and chords.** Besides single notes you can drill intervals
+  (minor second up to the octave), triads (major, minor, diminished,
+  augmented) and seventh chords (maj7, 7, m7, ø7, °7). Each one is stacked on
+  a single staff and spelled correctly, so a minor third over C is E♭, never
+  D♯. Hold all the tones to answer. You can roll the chord or add one key at
+  a time, and each tone turns green on the staff and the keyboard as you find
+  it. Any key outside the chord counts as a wrong answer. Keys still held
+  from the previous card don't count, so you have to play each chord fresh.
 - **Immediate feedback.** A right answer flashes green and the next card comes
   up. A wrong key shows a red "ghost" note where you actually played, so you
   can see whether you misread a line or a space. A second wrong key (or a
@@ -39,8 +49,9 @@ notes you miss come up more often.
 | Setting | Options |
 |---------|---------|
 | Clef | Treble · Bass · Grand staff (each card picks a clef) |
+| Notes | Single notes · Intervals · Triads · Seventh chords |
 | Treble / Bass range | On the staff (incl. the space just outside) · +1 … +4 ledger lines |
-| Accidentals | Naturals only · Sharps · Flats · Sharps & flats |
+| Accidentals | Naturals only · Sharps · Flats · Sharps & flats (for chords, this limits which chords can be spelled: *Naturals only* gives the white-key chords) |
 | Answer | Exact key · Any octave (pitch class) |
 | Time limit | Untimed · 10 / 5 / 3 / 2 / 1 s |
 | Flash | Note stays · hide after 2 / 1 / 0.5 / 0.25 s |
@@ -55,7 +66,13 @@ your piano already sounds. Cues sets the volume of the right/wrong ticks and
 the reveal tone.
 
 Only a card's **first** answer is scored. Retries after a miss are for
-practice and don't count toward the score.
+practice and don't count toward the score. A chord updates the stats of each
+of its notes. On a miss, the tones you'd already found count as right and the
+rest as missed, so the heatmap points at the notes that actually tripped you
+up.
+
+To play a chord with the mouse, click its keys one after another. On-screen
+clicks stay latched until the card changes.
 
 ## Building
 
@@ -88,6 +105,9 @@ is how the CI-style checks below are run headless.
 - `Source/NoteSpelling.{h,cpp}` is the single source of truth for staff
   geometry and note names: letter/accidental/octave, staff steps per clef,
   ledger-line counts and drill ranges. It's plain C++.
+- `Source/Cards.{h,cpp}` defines what a card is: a single note, an interval
+  or a chord, plus the quality tables (letter steps and semitones), correct
+  spelling, the pool for a range, and labels. It's plain C++.
 - `Source/Drill.{h,cpp}` is the flash-card engine: the candidate pool,
   weighted dealing, answer checking, timeouts, flash hiding, session score
   and lifetime per-note stats (with a compact text form for persistence).
@@ -95,7 +115,7 @@ is how the CI-style checks below are run headless.
   deterministic in tests.
 - `Source/StaffRenderer.{h,cpp}` paints a `StaffScene` (single or grand staff)
   with Bravura glyphs. The editor and the `staff-render` tool share it.
-- `Source/PluginProcessor.{h,cpp}`: the audio thread only forwards note-ons
+- `Source/PluginProcessor.{h,cpp}`: the audio thread only forwards note-ons and note-offs
   through a lock-free `NoteInbox` and renders `ToneEngine`. The `Drill` lives
   on the message thread, which is driven by the processor's 120 Hz timer.
 - `Source/PluginEditor.{h,cpp}` and `Source/TrainerKeyboard.{h,cpp}`: the UI.

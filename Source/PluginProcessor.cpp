@@ -10,6 +10,7 @@ namespace
     namespace prop
     {
         const juce::Identifier clefMode     { "clefMode" };
+        const juce::Identifier cardType     { "cardType" };
         const juce::Identifier ledgersT     { "ledgersTreble" };
         const juce::Identifier ledgersB     { "ledgersBass" };
         const juce::Identifier accidentals  { "accidentals" };
@@ -95,9 +96,15 @@ void FlashRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     // Host / controller note-ons answer the drill. Collected BEFORE the
     // on-screen keyboard's clicks are merged in below: those reach the drill
     // directly from the editor (submitKey), so they must not count twice.
+    // Note-offs travel too (velocity 0): chords must be HELD.
     for (const auto meta : midi)
-        if (const auto msg = meta.getMessage(); msg.isNoteOn())
+    {
+        const auto msg = meta.getMessage();
+        if (msg.isNoteOn())
             inbox.push (msg.getNoteNumber(), msg.getVelocity());
+        else if (msg.isNoteOff())
+            inbox.push (msg.getNoteNumber(), 0);
+    }
 
     // Merge on-screen clicks into this block's MIDI so the monitor sounds them,
     // and mark host notes as down on the on-screen keyboard.
@@ -150,30 +157,35 @@ void FlashRollAudioProcessor::timerCallback()
         storeStats();
     }
 
-    inbox.drain ([this, now] (int midi, int /*velocity*/) {
-        handleOutcome (drill.submit (midi, now), now);
+    inbox.drain ([this, now] (int midi, int velocity) {
+        if (velocity > 0)
+            handleOutcome (drill.submit (midi, now), now);
+        else
+            drill.release (midi);
     });
     handleOutcome (drill.tick (now), now);
 }
 
 void FlashRollAudioProcessor::handleOutcome (Drill::Outcome o, double now)
 {
+    const auto& card = drill.card();
     switch (o)
     {
         case Drill::Outcome::Ignored:
+        case Drill::Outcome::Partial:   // a chord tone landed; wait for the rest
             return;
         case Drill::Outcome::Started:
             break;
         case Drill::Outcome::Correct:
-            tone.requestCue (ToneEngine::Cue::Correct, drill.card().midi);
+            tone.requestCue (ToneEngine::Cue::Correct, card.midis.data(), card.size);
             break;
         case Drill::Outcome::Wrong:
             // Once the answer is on screen, let the ear hear it too.
             tone.requestCue (drill.answerRevealed() ? ToneEngine::Cue::Reveal : ToneEngine::Cue::Wrong,
-                             drill.card().midi);
+                             card.midis.data(), card.size);
             break;
         case Drill::Outcome::Timeout:
-            tone.requestCue (ToneEngine::Cue::Reveal, drill.card().midi);
+            tone.requestCue (ToneEngine::Cue::Reveal, card.midis.data(), card.size);
             break;
     }
 
@@ -221,6 +233,7 @@ DrillSettings FlashRollAudioProcessor::readSettings() const
     const auto& st = parameters.state;
     DrillSettings s;
     s.clefMode    = static_cast<ClefMode> (juce::jlimit (0, 2, static_cast<int> (st.getProperty (prop::clefMode, 0))));
+    s.cardType    = static_cast<CardType> (juce::jlimit (0, 3, static_cast<int> (st.getProperty (prop::cardType, 0))));
     s.ledgers     = { static_cast<int> (st.getProperty (prop::ledgersT, 1)),
                       static_cast<int> (st.getProperty (prop::ledgersB, 1)) };
     s.accidentals = static_cast<Accidentals> (juce::jlimit (0, 3, static_cast<int> (st.getProperty (prop::accidentals, 0))));
@@ -236,6 +249,7 @@ void FlashRollAudioProcessor::writeSettings (const DrillSettings& s)
 {
     auto& st = parameters.state;
     st.setProperty (prop::clefMode,    static_cast<int> (s.clefMode), nullptr);
+    st.setProperty (prop::cardType,    static_cast<int> (s.cardType), nullptr);
     st.setProperty (prop::ledgersT,    s.ledgers[0], nullptr);
     st.setProperty (prop::ledgersB,    s.ledgers[1], nullptr);
     st.setProperty (prop::accidentals, static_cast<int> (s.accidentals), nullptr);

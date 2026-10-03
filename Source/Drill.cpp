@@ -30,7 +30,7 @@ void Drill::setSettings (const DrillSettings& s, double nowMs)
     if (hasCard())
     {
         const bool stillValid = std::any_of (pool.begin(), pool.end(), [this] (const Card& c) {
-            return c.clef == card_.clef && c.spelling == card_.spelling;
+            return c.sameAs (card_);
         });
         if (! stillValid)
             deal (nowMs);
@@ -41,30 +41,9 @@ void Drill::rebuildPool()
 {
     pool.clear();
 
-    const auto addClef = [this] (Clef clef)
-    {
-        const int ledgers = settings.ledgers[static_cast<std::size_t> (clef)];
-        for (int step = spelling::lowestStep (ledgers); step <= spelling::highestStep (ledgers); ++step)
-        {
-            const auto natural = spelling::naturalAtStep (step, clef);
-
-            const auto add = [&] (int accidental)
-            {
-                Spelling sp = natural;
-                sp.accidental = accidental;
-                if (spelling::isAwkward (sp))
-                    return;
-                const int midi = spelling::midiFor (sp);
-                if (midi >= 0 && midi <= 127)
-                    pool.push_back ({ clef, sp, midi });
-            };
-
-            add (0);
-            if (settings.accidentals == Accidentals::Sharps || settings.accidentals == Accidentals::Mixed)
-                add (+1);
-            if (settings.accidentals == Accidentals::Flats || settings.accidentals == Accidentals::Mixed)
-                add (-1);
-        }
+    const auto addClef = [this] (Clef clef) {
+        cards::collect (settings.cardType, clef, settings.ledgers[static_cast<std::size_t> (clef)],
+                        settings.accidentals, pool);
     };
 
     if (settings.clefMode != ClefMode::Bass)   addClef (Clef::Treble);
@@ -76,24 +55,30 @@ double Drill::weightOf (const Card& c) const noexcept
     // In Mixed mode a step has three spellings; halve the accidentals so each
     // staff position still comes up about as often as in the other modes.
     double base = 1.0;
-    if (settings.accidentals == Accidentals::Mixed && c.spelling.accidental != 0)
+    if (! c.isChord() && settings.accidentals == Accidentals::Mixed && c.bottom().accidental != 0)
         base = 0.5;
 
     if (! settings.adaptive)
         return base;
 
-    const auto& s = stats (c.clef, c.midi);
+    // A chord is as hard as its notes on average.
+    double sum = 0.0;
+    for (int i = 0; i < c.size; ++i)
+    {
+        const auto& s = stats (c.clef, c.midis[static_cast<std::size_t> (i)]);
 
-    // Laplace-smoothed miss rate: an unseen note sits at 0.5, so new notes get
-    // dealt early; a mastered note decays toward 0 but never vanishes.
-    const double missRate = (double (s.attempts - s.correct) + 1.0) / (double (s.attempts) + 2.0);
+        // Laplace-smoothed miss rate: an unseen note sits at 0.5, so new notes
+        // get dealt early; a mastered note decays toward 0 but never vanishes.
+        const double missRate = (double (s.attempts - s.correct) + 1.0) / (double (s.attempts) + 2.0);
 
-    // Slowness relative to the player's session average (only once both exist).
-    double slow = 0.0;
-    if (s.correct > 0 && sessionCorrect > 0)
-        slow = std::clamp (s.avgMs() / sessionAvgMs() - 1.0, 0.0, 2.0);
+        // Slowness relative to the player's session average (once both exist).
+        double slow = 0.0;
+        if (s.correct > 0 && sessionCorrect > 0)
+            slow = std::clamp (s.avgMs() / sessionAvgMs() - 1.0, 0.0, 2.0);
 
-    return base * (0.3 + 3.0 * missRate + 0.6 * slow);
+        sum += 0.3 + 3.0 * missRate + 0.6 * slow;
+    }
+    return base * sum / c.size;
 }
 
 // ---- flow ----------------------------------------------------------------------
@@ -118,14 +103,15 @@ void Drill::deal (double nowMs)
 
     // Weighted pick, never the same key twice running (when there's a choice).
     const bool canAvoidRepeat = std::any_of (pool.begin(), pool.end(),
-                                             [this] (const Card& c) { return c.midi != lastMidi; });
+                                             [this] (const Card& c) { return c.bottomMidi() != lastMidi; });
     std::vector<double> w (pool.size());
     for (std::size_t i = 0; i < pool.size(); ++i)
-        w[i] = (canAvoidRepeat && pool[i].midi == lastMidi) ? 0.0 : weightOf (pool[i]);
+        w[i] = (canAvoidRepeat && pool[i].bottomMidi() == lastMidi) ? 0.0 : weightOf (pool[i]);
 
     std::discrete_distribution<std::size_t> pick (w.begin(), w.end());
     card_     = pool[pick (rng)];
-    lastMidi  = card_.midi;
+    lastMidi  = card_.bottomMidi();
+    pressed.reset();
     missed    = false;
     revealed  = false;
     wrongMidi = -1;
@@ -141,21 +127,53 @@ void Drill::enter (Phase p, double nowMs) noexcept
 
 bool Drill::answers (const Card& c, int midi, OctaveRule rule) noexcept
 {
-    return rule == OctaveRule::Exact ? midi == c.midi
-                                     : ((midi % 12) + 12) % 12 == ((c.midi % 12) + 12) % 12;
+    return rule == OctaveRule::Exact ? c.contains (midi) : c.containsPitchClass (midi);
+}
+
+bool Drill::chordComplete (const Card& c, const std::bitset<128>& keys, OctaveRule rule) noexcept
+{
+    for (int i = 0; i < c.size; ++i)
+    {
+        const int tone = c.midis[static_cast<std::size_t> (i)];
+        bool found = false;
+        if (rule == OctaveRule::Exact)
+            found = tone >= 0 && tone < 128 && keys[static_cast<std::size_t> (tone)];
+        else
+            for (int k = tone % 12; k < 128 && ! found; k += 12)
+                found = keys[static_cast<std::size_t> (k)];
+        if (! found)
+            return false;
+    }
+    return true;
+}
+
+bool Drill::toneFound (int index) const noexcept
+{
+    Card one = Card::single (card_.clef, card_.notes[static_cast<std::size_t> (index)]);
+    return chordComplete (one, pressed, settings.octaveRule);
 }
 
 void Drill::scoreFirstAnswer (bool correct, double nowMs) noexcept
 {
-    auto& s = noteStats[static_cast<std::size_t> (card_.clef)][static_cast<std::size_t> (card_.midi)];
-    ++s.attempts;
-    ++sessionCards;
+    const double ms = std::max (0.0, nowMs - cardShownAt);
 
+    // Per-note lifetime stats. A missed chord still credits the tones that
+    // were found, so the stats point at the notes that actually failed.
+    for (int i = 0; i < card_.size; ++i)
+    {
+        auto& s = noteStats[static_cast<std::size_t> (card_.clef)]
+                           [static_cast<std::size_t> (card_.midis[static_cast<std::size_t> (i)])];
+        ++s.attempts;
+        if (correct || (card_.isChord() && toneFound (i)))
+        {
+            ++s.correct;
+            s.correctMs += ms;
+        }
+    }
+
+    ++sessionCards;
     if (correct)
     {
-        const double ms = std::max (0.0, nowMs - cardShownAt);
-        ++s.correct;
-        s.correctMs += ms;
         ++sessionCorrect;
         sessionMs += ms;
         bestStreak_ = std::max (bestStreak_, ++streak_);
@@ -182,17 +200,27 @@ Drill::Outcome Drill::submit (int midi, double nowMs)
             break;
     }
 
-    if (answers (card_, midi, settings.octaveRule))
+    if (! answers (card_, midi, settings.octaveRule))
+        return wrongKey (midi, nowMs);
+
+    if (card_.isChord())
     {
-        if (! missed)
-            scoreFirstAnswer (true, nowMs);
-        wrongMidi = -1;
-        enter (Phase::Solved, nowMs);
-        return Outcome::Correct;
+        pressed.set (static_cast<std::size_t> (midi));
+        if (! chordComplete (card_, pressed, settings.octaveRule))
+            return Outcome::Partial;
     }
 
-    // Wrong key. The first one scores the miss; on retry the SECOND wrong key
-    // reveals the answer (one free guess to self-correct from the red ghost).
+    if (! missed)
+        scoreFirstAnswer (true, nowMs);
+    wrongMidi = -1;
+    enter (Phase::Solved, nowMs);
+    return Outcome::Correct;
+}
+
+Drill::Outcome Drill::wrongKey (int midi, double nowMs)
+{
+    // The first wrong key scores the miss; on retry the SECOND one reveals the
+    // answer (one free guess to self-correct from the red ghost).
     if (missed)
         revealed = true;
     else
@@ -207,6 +235,12 @@ Drill::Outcome Drill::submit (int midi, double nowMs)
         enter (Phase::Revealed, nowMs);
     }
     return Outcome::Wrong;
+}
+
+void Drill::release (int midi) noexcept
+{
+    if (midi >= 0 && midi < 128)
+        pressed.reset (static_cast<std::size_t> (midi));
 }
 
 Drill::Outcome Drill::tick (double nowMs)

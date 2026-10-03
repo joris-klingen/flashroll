@@ -57,7 +57,7 @@ private:
     FlashRollAudioProcessor& processor;
     StaffRenderer staff;
 
-    Row clefRow, trebleRow, bassRow, accRow, octaveRow, timeRow, flashRow, namesRow;
+    Row clefRow, cardRow, trebleRow, bassRow, accRow, octaveRow, timeRow, flashRow, namesRow;
     juce::ToggleButton retryToggle   { "Retry until right" };
     juce::ToggleButton adaptToggle   { "Adaptive (drill weak notes)" };
     juce::ToggleButton heatmapToggle { "Accuracy heatmap" };

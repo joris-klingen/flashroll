@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FlashRoll VERSION 0.1.0 LANGUAGES C CXX)
+project(FlashRoll VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ target_sources(FlashRoll PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/NoteSpelling.cpp
+    Source/Cards.cpp
     Source/Drill.cpp
     Source/ToneEngine.cpp
     Source/StaffRenderer.cpp
@@ -73,13 +74,15 @@ target_link_libraries(FlashRoll PRIVATE
 )
 
 # ---- drill-check ------------------------------------------------------------
-# The drill engine (NoteSpelling + Drill) is plain C++ with no JUCE, so its
+# The drill engine (NoteSpelling + Cards + Drill) is plain C++ with no JUCE, so its
 # regression net is a tiny plain executable: staff placement for every key,
-# candidate ranges, answer scoring, timeouts, adaptive weighting and the stats
+# candidate ranges, chord spelling, answer scoring (incl. held chords), timeouts,
+# adaptive weighting and the stats
 # round trip. Registered as the `drill-logic` CTest below.
 add_executable(drill-check
     tools/DrillCheck.cpp
     Source/NoteSpelling.cpp
+    Source/Cards.cpp
     Source/Drill.cpp
 )
 target_include_directories(drill-check PRIVATE Source)
@@ -94,6 +97,7 @@ target_sources(staff-render PRIVATE
     tools/StaffRender.cpp
     Source/StaffRenderer.cpp
     Source/NoteSpelling.cpp
+    Source/Cards.cpp
     Source/Drill.cpp
 )
 target_include_directories(staff-render PRIVATE Source)

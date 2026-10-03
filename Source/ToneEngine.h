@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 
 namespace flashroll
 {
@@ -21,15 +22,19 @@ public:
     {
         Correct,   // short bright tick
         Wrong,     // soft low thud
-        Reveal,    // the TARGET note itself, so the ear learns what was missed
+        Reveal,    // the TARGET note(s) itself, so the ear learns what was missed
     };
+
+    static constexpr int kMaxCueNotes = 4;
 
     void prepare (double sampleRate) noexcept;
     void reset() noexcept;
 
     // Message thread → audio thread. The latest request wins if two land in
-    // the same block (they never usefully overlap).
-    void requestCue (Cue, int midi) noexcept;
+    // the same block (they never usefully overlap). `midis` are the card's
+    // notes (up to kMaxCueNotes): Reveal sounds them all, so a missed chord is
+    // heard as a chord; the other cues key off the first.
+    void requestCue (Cue, const int* midis, int count) noexcept;
 
     // Audio thread.
     void noteOn (int midi, int velocity) noexcept;
@@ -63,11 +68,12 @@ private:
 
     double sampleRate = 48000.0;
     std::array<Voice, 16> monitor {};
-    std::array<Voice, 4>  cues {};
+    std::array<Voice, 6>  cues {};
     std::size_t nextCue = 0;
 
-    // Packed request: (cue << 8) | midi, or -1 = nothing pending.
-    std::atomic<int> pendingCue { -1 };
+    // Packed request, one byte each: [cue+1][count][note0..note3]; 0 = nothing
+    // pending. One 64-bit atomic, so a request can never tear.
+    std::atomic<std::uint64_t> pendingCue { 0 };
 };
 
 }  // namespace flashroll

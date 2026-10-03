@@ -15,8 +15,6 @@ the remaining items are not renumbered.
 2. **Key signatures.** Deal notes within a chosen key, drawing the key
    signature after the clef and leaving accidentals off notes in the key.
    `NoteSpelling` would need a key-aware spelling.
-3. **Intervals and chords.** Deal 2–4 note stacks and accept the card once all
-   of its keys are held (track held notes on the message thread).
 4. **Rounds.** Add a fixed-length set (20 / 50 cards) with an end-of-round
    summary (accuracy, average time, slowest notes) alongside the current
    endless mode.
@@ -24,6 +22,11 @@ the remaining items are not renumbered.
    drill.
 6. **Note-reading over time.** Keep a per-day history of accuracy and average
    time and show a small trend chart.
+
+9. **Chords across the grand staff.** Today every interval and chord sits on
+   one staff. Splitting a chord between the hands (for example a bass root
+   with the upper tones in the treble) and adding inversions would make it
+   closer to real piano reading.
 
 ## Polish
 

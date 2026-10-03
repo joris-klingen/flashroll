@@ -21,9 +21,10 @@ struct StaffScene
     bool  noteVisible = true;                  // false while flash-hidden
     Card  card;
     Mark  mark = Mark::Neutral;
+    std::array<bool, kMaxChordNotes> found {}; // chord tones already pressed (drawn green)
     int   ghostMidi = -1;                      // the wrong key, drawn as a red ghost
     float flash = 0.0f;                        // 0..1 background pulse (green/red)
-    juce::String answerLabel;                  // drawn by the note when revealed (e.g. "F♯4")
+    juce::String answerLabel;                  // drawn by the card when revealed (e.g. "F♯4", "Am · A C E")
     juce::String ghostLabel;                   // drawn by the ghost
     juce::String prompt;                       // centred message when there's no card
 };
@@ -70,8 +71,14 @@ private:
     };
 
     void drawStaff (juce::Graphics&, const StaffGeom&, float x0, float x1) const;
-    void drawNote (juce::Graphics&, const StaffGeom&, float x, const Spelling&,
-                   juce::Colour, const juce::String& label, bool labelBelow) const;
+    // A card's noteheads (single, interval or chord) centred on `x`, with
+    // ledger lines, accidentals and an optional label pill.
+    void drawCard (juce::Graphics&, const StaffGeom&, float x, const Card&,
+                   const std::array<juce::Colour, kMaxChordNotes>& colours,
+                   const juce::String& label, juce::Colour labelColour) const;
+    void drawPill (juce::Graphics&, float centreX, float topY, float space,
+                   const juce::String& text, juce::Colour) const;
+    static float pillHeight (float space) noexcept;
     void fillGlyph (juce::Graphics&, juce::juce_wchar, float x, float y, float space) const;
 
     juce::Typeface::Ptr music;

@@ -12,7 +12,8 @@ namespace
     constexpr float kLedgerThickness     = 0.16f;
     constexpr float kLedgerExtension     = 0.4f;
     constexpr float kAccidentalGap       = 0.25f;
-    constexpr float kGhostOffset         = 3.4f;   // ghost note sits this far right of the target
+    constexpr float kGhostOffset         = 3.8f;   // ghost note sits this far right of the target
+    constexpr float kAccidentalColumn    = 1.15f;  // width of one accidental column (stacked chords)
     constexpr float kStaffWidthSpaces    = 20.0f;
     constexpr int   kGhostSlackSteps     = 4;      // ghost drawn up to 2 ledgers past the drill range
 }
@@ -81,11 +82,36 @@ void StaffRenderer::drawStaff (juce::Graphics& g, const StaffGeom& s, float x0, 
     }
 }
 
-void StaffRenderer::drawNote (juce::Graphics& g, const StaffGeom& s, float x, const Spelling& sp,
-                              juce::Colour colour, const juce::String& label, bool labelBelow) const
+void StaffRenderer::drawPill (juce::Graphics& g, float centreX, float topY, float space,
+                              const juce::String& text, juce::Colour colour) const
 {
-    const int   step = spelling::staffStep (sp, s.clef);
-    const float y    = s.stepY (step);
+    const float fh = juce::jlimit (11.0f, 28.0f, space * 1.25f);
+    juce::Font f { juce::FontOptions (fh, juce::Font::bold) };
+    const float tw = juce::GlyphArrangement::getStringWidth (f, text) + fh * 0.8f;
+    const juce::Rectangle<float> pill (centreX - tw * 0.5f, topY, tw, fh * 1.3f);
+    g.setColour (background().withAlpha (0.92f));
+    g.fillRoundedRectangle (pill, fh * 0.3f);
+    g.setColour (colour);
+    g.drawRoundedRectangle (pill, fh * 0.3f, 1.0f);
+    g.setFont (f);
+    g.drawText (text, pill, juce::Justification::centred);
+}
+
+float StaffRenderer::pillHeight (float space) noexcept
+{
+    return juce::jlimit (11.0f, 28.0f, space * 1.25f) * 1.3f;
+}
+
+void StaffRenderer::drawCard (juce::Graphics& g, const StaffGeom& s, float x, const Card& card,
+                              const std::array<juce::Colour, kMaxChordNotes>& colours,
+                              const juce::String& label, juce::Colour labelColour) const
+{
+    const int n = card.size;
+    std::array<int, kMaxChordNotes> steps {};
+    for (int i = 0; i < n; ++i)
+        steps[static_cast<std::size_t> (i)] = spelling::staffStep (card.notes[static_cast<std::size_t> (i)], s.clef);
+    const int lowStep  = steps[0];
+    const int highStep = steps[static_cast<std::size_t> (n - 1)];
 
     auto head = fontOk ? glyph (noteheadWhole) : juce::Path();
     if (head.isEmpty())
@@ -94,50 +120,80 @@ void StaffRenderer::drawNote (juce::Graphics& g, const StaffGeom& s, float x, co
     const float headW = hb.getWidth() * s.space;
     const float left  = x - headW * 0.5f;
 
-    // Ledger lines (drawn in the line colour, slightly heavier than the staff).
+    // Seconds can't share a column: walking up, the upper note of a second
+    // moves to the right of the stem side (standard engraving), unless the
+    // note below it already moved.
+    std::array<bool, kMaxChordNotes> shifted {};
+    bool anyShifted = false;
+    for (int i = 1; i < n; ++i)
+    {
+        const auto k = static_cast<std::size_t> (i);
+        shifted[k] = steps[k] - steps[k - 1] == 1 && ! shifted[k - 1];
+        anyShifted |= shifted[k];
+    }
+
+    // Ledger lines: shared by the whole stack, long enough for a shifted column.
     g.setColour (lineInk());
     const float lt = std::max (1.0f, kLedgerThickness * s.space);
     const float lx = left - kLedgerExtension * s.space;
-    const float lw = headW + 2.0f * kLedgerExtension * s.space;
-    for (int k = -2; k >= step; k -= 2)  g.fillRect (lx, s.stepY (k) - lt * 0.5f, lw, lt);
-    for (int k = 10; k <= step; k += 2)  g.fillRect (lx, s.stepY (k) - lt * 0.5f, lw, lt);
+    const float lw = headW * (anyShifted ? 2.0f : 1.0f) + 2.0f * kLedgerExtension * s.space;
+    for (int k = -2; k >= lowStep; k -= 2)   g.fillRect (lx, s.stepY (k) - lt * 0.5f, lw, lt);
+    for (int k = 10; k <= highStep; k += 2)  g.fillRect (lx, s.stepY (k) - lt * 0.5f, lw, lt);
 
-    g.setColour (colour);
-    head.applyTransform (juce::AffineTransform::scale (s.space).translated (left - hb.getX() * s.space, y));
-    g.fillPath (head);
-
-    if (sp.accidental != 0)
+    for (int i = 0; i < n; ++i)
     {
+        const auto k = static_cast<std::size_t> (i);
+        auto h = head;
+        const float hx = left + (shifted[k] ? headW : 0.0f);
+        h.applyTransform (juce::AffineTransform::scale (s.space).translated (hx - hb.getX() * s.space, s.stepY (steps[k])));
+        g.setColour (colours[k]);
+        g.fillPath (h);
+    }
+
+    // Accidentals, top note first, each in the nearest column (leftward) where
+    // it clears every accidental already there by at least a sixth (6 steps).
+    std::array<std::vector<int>, kMaxChordNotes> columns;
+    for (int i = n - 1; i >= 0; --i)
+    {
+        const auto k  = static_cast<std::size_t> (i);
+        const auto& sp = card.notes[k];
+        if (sp.accidental == 0)
+            continue;
+
+        std::size_t col = 0;
+        while (col + 1 < columns.size()
+               && std::any_of (columns[col].begin(), columns[col].end(),
+                               [&] (int other) { return std::abs (other - steps[k]) < 6; }))
+            ++col;
+        columns[col].push_back (steps[k]);
+
+        const float y = s.stepY (steps[k]);
+        const float colRight = left - kAccidentalGap * s.space - static_cast<float> (col) * kAccidentalColumn * s.space;
+        g.setColour (colours[k]);
         if (fontOk)
         {
             auto acc = glyph (sp.accidental > 0 ? accSharp : accFlat);
             const auto ab = acc.getBounds();
-            const float ax = left - kAccidentalGap * s.space - ab.getRight() * s.space;
-            acc.applyTransform (juce::AffineTransform::scale (s.space).translated (ax, y));
+            acc.applyTransform (juce::AffineTransform::scale (s.space).translated (colRight - ab.getRight() * s.space, y));
             g.fillPath (acc);
         }
         else
         {
             g.setFont (juce::FontOptions (s.space * 2.0f));
             g.drawText (sp.accidental > 0 ? "#" : "b",
-                        juce::Rectangle<float> (left - 1.6f * s.space, y - s.space, s.space * 1.4f, s.space * 2.0f),
+                        juce::Rectangle<float> (colRight - 1.4f * s.space, y - s.space, s.space * 1.4f, s.space * 2.0f),
                         juce::Justification::centredRight);
         }
     }
 
+    // Label: under the stack when it sits high, over it when it sits low.
     if (label.isNotEmpty())
     {
-        const float fh = juce::jlimit (11.0f, 28.0f, s.space * 1.25f);
-        juce::Font f { juce::FontOptions (fh, juce::Font::bold) };
-        const float tw = juce::GlyphArrangement::getStringWidth (f, label) + fh * 0.8f;
-        const float ly = labelBelow ? y + 1.6f * s.space : y - 1.6f * s.space - fh * 1.3f;
-        const juce::Rectangle<float> pill (x - tw * 0.5f, ly, tw, fh * 1.3f);
-        g.setColour (background().withAlpha (0.92f));
-        g.fillRoundedRectangle (pill, fh * 0.3f);
-        g.setColour (colour);
-        g.drawRoundedRectangle (pill, fh * 0.3f, 1.0f);
-        g.setFont (f);
-        g.drawText (label, pill, juce::Justification::centred);
+        const float cx = x + (anyShifted ? headW * 0.5f : 0.0f);
+        if (lowStep >= 4)
+            drawPill (g, cx, s.stepY (lowStep) + 1.6f * s.space, s.space, label, labelColour);
+        else
+            drawPill (g, cx, s.stepY (highStep) - 1.6f * s.space - pillHeight (s.space), s.space, label, labelColour);
     }
 }
 
@@ -210,17 +266,20 @@ void StaffRenderer::paint (juce::Graphics& g, juce::Rectangle<float> area, const
 
     if (scene.hasNote)
     {
-        const auto& geom = geomFor (scene.card.clef);
+        const auto& card = scene.card;
+        const auto& geom = geomFor (card.clef);
         const float noteX = x0 + staffW * 0.52f;
-        const int   step  = spelling::staffStep (scene.card.spelling, scene.card.clef);
-        const bool  below = step >= 4;
 
         if (scene.noteVisible)
         {
-            const auto colour = scene.mark == StaffScene::Mark::Correct  ? correct()
-                              : scene.mark == StaffScene::Mark::Revealed ? reveal()
-                                                                          : ink();
-            drawNote (g, geom, noteX, scene.card.spelling, colour, scene.answerLabel, below);
+            const auto base = scene.mark == StaffScene::Mark::Correct  ? correct()
+                            : scene.mark == StaffScene::Mark::Revealed ? reveal()
+                                                                        : ink();
+            // Chord tones already found glow green while the rest are still owed.
+            std::array<juce::Colour, kMaxChordNotes> colours;
+            for (std::size_t i = 0; i < colours.size(); ++i)
+                colours[i] = (scene.mark != StaffScene::Mark::Correct && scene.found[i]) ? correct() : base;
+            drawCard (g, geom, noteX, card, colours, scene.answerLabel, base);
         }
         else
         {
@@ -234,32 +293,24 @@ void StaffRenderer::paint (juce::Graphics& g, juce::Rectangle<float> area, const
         if (scene.ghostMidi >= 0)
         {
             // Spell the wrong key the way the card leans (flats stay flats).
-            const auto ghost = spelling::fromMidi (scene.ghostMidi, scene.card.spelling.accidental < 0);
-            const int  gStep = spelling::staffStep (ghost, scene.card.clef);
-            const int  l     = scene.ledgers[static_cast<std::size_t> (scene.card.clef)];
+            const auto ghost = Card::single (card.clef, spelling::fromMidi (scene.ghostMidi, card.leansFlat()));
+            const int  gStep = spelling::staffStep (ghost.bottom(), card.clef);
+            const int  l     = scene.ledgers[static_cast<std::size_t> (card.clef)];
             const float gx   = noteX + kGhostOffset * space;
 
             if (gStep >= spelling::lowestStep (l) - kGhostSlackSteps
                 && gStep <= spelling::highestStep (l) + kGhostSlackSteps)
             {
-                drawNote (g, geom, gx, ghost, wrong().withAlpha (0.75f), scene.ghostLabel, gStep >= 4);
+                const auto red = wrong().withAlpha (0.75f);
+                drawCard (g, geom, gx, ghost, { red, red, red, red }, scene.ghostLabel, red);
             }
             else
             {
                 // Far off this staff (wrong octave by a mile): name it with an
                 // arrow instead of drawing a ladder of ledger lines off-screen.
-                const float fh = juce::jlimit (11.0f, 28.0f, space * 1.25f);
-                juce::Font f { juce::FontOptions (fh, juce::Font::bold) };
                 const auto text = scene.ghostLabel + (gStep < 0 ? juce::String::fromUTF8 (" \xe2\x86\x93")
                                                                 : juce::String::fromUTF8 (" \xe2\x86\x91"));
-                const float tw = juce::GlyphArrangement::getStringWidth (f, text) + fh * 0.8f;
-                const juce::Rectangle<float> pill (gx - tw * 0.5f, geom.stepY (4) - fh * 0.65f, tw, fh * 1.3f);
-                g.setColour (background().withAlpha (0.92f));
-                g.fillRoundedRectangle (pill, fh * 0.3f);
-                g.setColour (wrong());
-                g.drawRoundedRectangle (pill, fh * 0.3f, 1.0f);
-                g.setFont (f);
-                g.drawText (text, pill, juce::Justification::centred);
+                drawPill (g, gx, geom.stepY (4) - pillHeight (space) * 0.5f, space, text, wrong());
             }
         }
     }
